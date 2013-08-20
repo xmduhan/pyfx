@@ -3,7 +3,7 @@ import pandas
 from datetime import datetime
 
 
-data = pandas.read_csv(r'i:\csv\TB_HFMarketsLtd_EURCAD_M1_EveryTick.csv') 
+data = pandas.read_csv(r'C:\csv\TB_UBE_EURCAD_M1_75929.csv') 
 
 
 i = 0
@@ -42,7 +42,7 @@ def TimeCurrent():
 
 def isTradingHour():
     hh24=data["time"][i][11:13]
-    if  hh24 in ("23","0","1","2"):
+    if  hh24 in ("23","00","01","02"):
         return True
     else:
         return False
@@ -65,7 +65,7 @@ def checkForOpen():
     global lastBuyCreated,lastSellCreated
     if isTradingHour() :
         if not lastBuyCreated or not isSameHour(lastBuyCreated,TimeCurrent()):
-            if Rsi() < 30: 
+            if Rsi() < 35: 
                 lastBuyCreated = TimeCurrent()
                 tr=TradingRecord()
                 tr.OpenTime = TimeCurrent()
@@ -73,7 +73,7 @@ def checkForOpen():
                 tr.OpenPrice = Ask()            
                 TradingCurrent[TimeCurrent()]=tr            
         if not lastSellCreated or not isSameHour(lastSellCreated,TimeCurrent()):
-            if Rsi() > 70:
+            if Rsi() > 65:
                 lastSellCreated = TimeCurrent()
                 tr=TradingRecord()
                 tr.OpenTime = TimeCurrent()
@@ -89,14 +89,14 @@ def checkForClose():
         tr=TradingCurrent[key]
         if tr.OrderType == OP_BUY : 
             if Bid() - tr.OpenPrice > takeprofit or tr.OpenPrice - Bid() > stoploss or \
-               MinutesBetween(TimeCurrent(),tr.OpenTime) > 120:
+               MinutesBetween(TimeCurrent(),tr.OpenTime) > 240:
                 tr.CloseTime = TimeCurrent()
                 tr.ClosePrice = Bid()
                 del(TradingCurrent[key])
                 TradingHistory[key]=tr
         if tr.OrderType == OP_SELL :
             if tr.OpenPrice - Ask() > takeprofit or Ask() - tr.OpenPrice > stoploss or \
-               MinutesBetween(TimeCurrent(),tr.OpenTime) > 120:
+               MinutesBetween(TimeCurrent(),tr.OpenTime) > 240:
                 tr.CloseTime = TimeCurrent()
                 tr.ClosePrice = Ask()
                 del(TradingCurrent[key])
