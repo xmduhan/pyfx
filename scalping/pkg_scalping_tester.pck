@@ -4,10 +4,11 @@ create or replace package pkg_scalping_tester is
   procedure load_trading_data(i_table_name varchar2, i_len number);
   procedure get_profit_slice(i_tp_level number, i_sl_level number, i_len number);
   procedure get_rsi_trading(i_long_rsi number, i_short_rsi number);
+  procedure get_rsi_trading_stat;
   procedure get_data;
-  
-  -- 建立相关的数据结构
-  /* 
+
+-- 建立相关的数据结构
+/* 
   -- Create sequence 
   create sequence SEQ_LOG
   minvalue 1
@@ -62,7 +63,7 @@ create or replace package pkg_scalping_tester is
     SL NUMBER,
     CL NUMBER
   );
-  create index TB_LUOYU_PROFIT_SLICE_1_I1 on TB_ST_PROFIT_SLICE_LONG (N);
+  create index TB_ST_PROFIT_SLICE_LONG_i1 on TB_ST_PROFIT_SLICE_LONG (N);
   
   create table TB_ST_PROFIT_SLICE_SHORT
   (
@@ -170,6 +171,7 @@ create or replace package pkg_scalping_tester is
     PREDICT_TOTAL_PROFIT NUMBER,
     DEVIATION            NUMBER
   );
+  create index tb_st_rsi_trading_detail_1_i1 on tb_st_rsi_trading_detail_1(g);
   
   create table tb_st_rsi_trading_stat
   (
@@ -197,7 +199,24 @@ create or replace package pkg_scalping_tester is
     R2            NUMBER,
     R3            NUMBER
   );
+  alter table tb_st_trading_data nologging;
+  alter table tb_st_trading_data_mix nologging;
+  alter table tb_st_profit_slice_long nologging;
+  alter table tb_st_profit_slice_short nologging;
+  alter table tb_st_profit_slice nologging;
+  alter table tb_st_rsi_trading nologging;
+  alter table tb_st_rsi_trading_detail nologging;
+  alter table tb_st_rsi_trading_detail_fit nologging;
+  alter table tb_st_rsi_trading_detail_1 nologging;
+  alter table tb_st_rsi_trading_stat nologging;  
+  alter table tb_st_profit_slice_bak nologging;
+  alter table tb_st_rsi_trading_bak nologging;
   
+  alter index tb_st_profit_slice_short_i1 nologging;
+  alter index tb_st_profit_slice_long_i1 nologging;
+  alter index tb_st_rsi_trading_detail_i1 nologging;
+  alter index tb_st_trading_data_i1 nologging;
+  alter index tb_st_rsi_trading_detail_1_i1 nologging;
   
   */
 
@@ -206,12 +225,26 @@ end pkg_scalping_tester;
 create or replace package body pkg_scalping_tester is
 
   /*
-    存在问题：
+    存在问题：                                                            （1）
     1. 不支持信号生成器使用结束头寸信号
     2. 不能限制头寸重入
     -- 以上两点困难只要修改get_rsi_trading，做适当完善可以解决
     -- 如果解决了以上两个问题，则形成一个比较完整的交易系统分析方法。  
-  */ 
+    
+    
+    不用的交易区 : type,hh24
+    输入参数 : rsi   (来源于过滤器)
+    输入参数 : sl,tp (来源于风险控制)    
+    输出参数 : avg_profit,tp_pct,avg_deviate_rate,k等数据
+    
+    
+    一些有价值的想法：               
+    1、做一个可以形象暂时rsi变化时，tl-sl，所对应的二维获利区间变化图      
+      （rsi,sl,tp三维立方体,颜色表示平均获利情况）                       （2）
+    2、将不同月份数据分别做这样的切片分析，找寻在相同切片位置，
+    的不用月份的盈利数据情况，做平均盈利情况，和做方差分析。             （3）  
+    （甚至可以考虑交易组合）
+  */
 
   procedure log(i_msg varchar2) is
   begin
@@ -236,7 +269,8 @@ create or replace package body pkg_scalping_tester is
     commit;
     -- 将数据与之后的特定长度周期的数据进行关联
     execute immediate 'truncate table tb_st_trading_data_mix';
-    insert into tb_st_trading_data_mix
+    insert /*+append*/
+    into tb_st_trading_data_mix
       select a.time, a.n, a.ask, a.bid, b.n n1, b.ask ask1, b.bid bid1
         from tb_st_trading_data a, tb_st_trading_data b
        where a.n < b.n
@@ -252,7 +286,8 @@ create or replace package body pkg_scalping_tester is
         to_char(i_len) || '):开始');
     -- 生成做多交易的盈利切片
     execute immediate 'truncate table tb_st_profit_slice_long';
-    insert into tb_st_profit_slice_long
+    insert /*+append*/
+    into tb_st_profit_slice_long
       select n, min(n1) n1, 1 tp, 0 sl, 0 cl
         from tb_st_trading_data_mix
        where (bid1 - ask) * 10000 > i_tp_level
@@ -278,7 +313,8 @@ create or replace package body pkg_scalping_tester is
   
     -- 生成做空交易的盈利切片
     execute immediate 'truncate table tb_st_profit_slice_short';
-    insert into tb_st_profit_slice_short
+    insert /*+append*/
+    into tb_st_profit_slice_short
       select n, min(n1) n1, 1 tp, 0 sl, 0 cl
         from tb_st_trading_data_mix
        where (bid - ask1) * 10000 > i_tp_level
@@ -304,7 +340,8 @@ create or replace package body pkg_scalping_tester is
   
     -- 合并生成数据
     execute immediate 'truncate table tb_st_profit_slice';
-    insert into tb_st_profit_slice
+    insert /*+append*/
+    into tb_st_profit_slice
       select i_tp_level,
              i_sl_level,
              i_len,
@@ -320,7 +357,8 @@ create or replace package body pkg_scalping_tester is
        where a.n = b.n(+)
          and a.n1 = c.n(+);
     commit;
-    insert into tb_st_profit_slice
+    insert /*+append*/
+    into tb_st_profit_slice
       select i_tp_level,
              i_sl_level,
              i_len,
@@ -346,7 +384,8 @@ create or replace package body pkg_scalping_tester is
     log('get_rsi_trading(' || to_char(i_long_rsi) || ',' || to_char(i_short_rsi) ||
         '):开始');
     execute immediate 'truncate table tb_st_rsi_trading';
-    insert into tb_st_rsi_trading
+    insert /*+append*/
+    into tb_st_rsi_trading
       select a.time, a.n, 'long' type, i_long_rsi
         from tb_st_trading_data a, tb_st_trading_data b
        where a.n = b.n + 1
@@ -368,7 +407,8 @@ create or replace package body pkg_scalping_tester is
   
     -- 关联交易记录和对应的获利切片,形成交易明细
     execute immediate 'truncate table tb_st_rsi_trading_detail';
-    insert into tb_st_rsi_trading_detail
+    insert /*+append*/
+    into tb_st_rsi_trading_detail
       select a.*,
              to_char(a.time, 'hh24') hh24,
              b.rsi,
@@ -383,7 +423,8 @@ create or replace package body pkg_scalping_tester is
   
     -- 通过一元线性回归拟合出"交易次数--累计利润"的直线方程
     execute immediate 'truncate table tb_st_rsi_trading_detail_fit';
-    insert into tb_st_rsi_trading_detail_fit
+    insert /*+append*/
+    into tb_st_rsi_trading_detail_fit
       select g,
              count(*) cnt,
              sum((x - x0) * (y - y0)) / sum((x - x0) * (x - x0)) b1,
@@ -400,17 +441,20 @@ create or replace package body pkg_scalping_tester is
   
     --  计算每笔交易的离差
     execute immediate 'truncate table tb_st_rsi_trading_detail_1';
-    insert into tb_st_rsi_trading_detail_1
+    insert /*+append*/
+    into tb_st_rsi_trading_detail_1
       select a.*,
              b0 + b.b1 * a.m predict_total_profit,
-             abs(total_profit - (b0 + b.b1 * a.m)) deviation
+             abs(total_profit - (b0 + b.b1 * a.m)) deviation,
+             b.b1 k
         from tb_st_rsi_trading_detail a, tb_st_rsi_trading_detail_fit b
        where a.g = b.g(+);
     commit;
   
     -- 对交易记录进行统计
     execute immediate 'truncate table tb_st_rsi_trading_stat';
-    insert into tb_st_rsi_trading_stat
+    insert /*+append*/
+    into tb_st_rsi_trading_stat
       select g,
              tp_level,
              sl_level,
@@ -431,9 +475,13 @@ create or replace package body pkg_scalping_tester is
              sum(cl) / count(*) cl_pct,
              sum(deviation) deviation,
              sum(deviation) / count(*) avg_deviation,
-             row_number() over(order by sum(profit) desc) r1,
-             row_number() over(order by sum(tp) / count(*) desc) r2,
-             row_number() over(order by sum(deviation) / count(*)) r3
+             sum(deviation * deviation) / count(*) avg_deviation_square,
+             sum(deviation / abs(decode(total_profit, 0, null, total_profit))) /
+             count(*) avg_deviate_rate,
+             max(k) k
+      --row_number() over(order by sum(profit) desc) r1,
+      --row_number() over(order by sum(tp) / count(*) desc) r2,
+      --row_number() over(order by sum(deviation) / count(*)) r3
         from tb_st_rsi_trading_detail_1
        group by g, tp_level, sl_level, len, type, hh24, rsi;
     commit;
@@ -447,10 +495,11 @@ create or replace package body pkg_scalping_tester is
   begin
     clear_log;
     log('get_data:开始');
-    
+  
     -- 导入建议的原始数据
-    load_trading_data('tb_hfmarketsltd_eurcad_m1_real', 120);
-    
+    --load_trading_data('tb_hfmarketsltd_eurcad_m1_real', 120);
+    load_trading_data('tb_hf_eurcad_m1_30sp', 120);
+  
     -- 生成所有盈利切片数据    
     execute immediate 'truncate table tb_st_profit_slice_bak';
     i := 0.5;
@@ -458,7 +507,8 @@ create or replace package body pkg_scalping_tester is
       j := 0.5;
       while j <= 30 loop
         get_profit_slice(i, j, 120);
-        insert into tb_st_profit_slice_bak
+        insert /*+append*/
+        into tb_st_profit_slice_bak
           select * from tb_st_profit_slice;
         commit;
         j := j + .5;
@@ -471,15 +521,16 @@ create or replace package body pkg_scalping_tester is
     i := 5;
     while i <= 35 loop
       get_rsi_trading(i, 100 - i);
-      insert into tb_st_rsi_trading_bak
+      insert /*+append*/
+      into tb_st_rsi_trading_bak
         select * from tb_st_rsi_trading;
       commit;
       i := i + 1;
     end loop;
-    
+  
     -- 获取交易最终统计结果
     get_rsi_trading_stat;
-    
+  
     log('get_data:结束');
   end;
 
@@ -543,6 +594,22 @@ B0=mean(y)-B1*mean(x);
 paste("模型 : Y = ",round(B0,3)," + ",round(B1,3),"X",sep = "");
 # 使用lm函数计算
 lm(y~x);
+*/
+
+/*
+select tp_level,
+       sl_level,
+       rsi,
+       cnt,
+       profit,
+       tp_pct,
+       profit / cnt avg_profit,
+       avg_deviate_rate,
+       k
+  from tb_st_rsi_trading_stat
+ where type = 'short'
+   and hh24 = '00'
+   and cnt > 1;
 */
 
 end pkg_scalping_tester;
