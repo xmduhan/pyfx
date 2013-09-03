@@ -5,7 +5,10 @@ create or replace package pkg_scalping_tester is
   procedure get_profit_slice(i_tp_level number, i_sl_level number, i_len number);
   procedure get_rsi_trading(i_long_rsi number, i_short_rsi number);
   procedure get_rsi_trading_stat;
-  procedure get_data;
+  procedure get_data(i_table_name varchar2); 
+  procedure test01;
+  procedure test02;
+  procedure test03;
 
 -- 建立相关的数据结构
 /* 
@@ -103,8 +106,9 @@ create or replace package pkg_scalping_tester is
     VOLUME NUMBER,
     ASK    NUMBER,
     BID    NUMBER,
-    RSI    NUMBER,
-    N      NUMBER
+    RSI    NUMBER,    
+    RSI1   NUMBER,
+    N      NUMBER         
   );
   create index TB_ST_TRADING_DATA_I1 on TB_ST_TRADING_DATA (N);
   
@@ -114,10 +118,11 @@ create or replace package pkg_scalping_tester is
     N    NUMBER,
     ASK  NUMBER,
     BID  NUMBER,
+    time1 DATE,
     N1   NUMBER,
     ASK1 NUMBER,
     BID1 NUMBER
-  ); 
+  );
 
   create table tb_st_rsi_trading_detail
   (
@@ -260,21 +265,34 @@ create or replace package body pkg_scalping_tester is
 
   --  导入交易数据
   procedure load_trading_data(i_table_name varchar2, i_len number) is
+    v_column_name varchar2(4000);
   begin
     log('load_trading_data(' || i_table_name || ',' || to_char(i_len) || '):开始');
+    -- 获取数据表中相同的字段
+    select wm_concat(column_name)
+      into v_column_name
+      from user_tab_cols a
+     where table_name = 'TB_ST_TRADING_DATA'
+       and exists (select 1
+              from user_tab_cols b
+             where table_name = upper(i_table_name)
+               and b.column_name = a.column_name)
+     order by column_id;
     execute immediate 'truncate table tb_st_trading_data';
     execute immediate '
-    insert into tb_st_trading_data
-      select * from ' || i_table_name;
+    insert /*+append*/ into tb_st_trading_data(' ||
+                      v_column_name || ')
+      select ' || v_column_name || ' from ' || i_table_name;
     commit;
+  
     -- 将数据与之后的特定长度周期的数据进行关联
     execute immediate 'truncate table tb_st_trading_data_mix';
     insert /*+append*/
     into tb_st_trading_data_mix
-      select a.time, a.n, a.ask, a.bid, b.n n1, b.ask ask1, b.bid bid1
+      select a.time, a.n, a.ask, a.bid, b.time time1, b.n n1, b.ask ask1, b.bid bid1
         from tb_st_trading_data a, tb_st_trading_data b
        where a.n < b.n
-         and b.n <= a.n + i_len;
+         and b.n <= a.n + i_len ;
     commit;
     log('load_trading_data:结束');
   end;
@@ -300,7 +318,8 @@ create or replace package body pkg_scalping_tester is
       union
       select n, max(n1) n1, 0 tp, 0 sl, 1 cl
         from tb_st_trading_data_mix
-       where n1 - n <= i_len
+      --where n1 - n <= i_len
+       where (time1 - time) * 1440 <= i_len 
        group by n;
     commit;
     delete /*+rule*/
@@ -327,7 +346,8 @@ create or replace package body pkg_scalping_tester is
       union
       select n, max(n1) n1, 0 tp, 0 sl, 1 cl
         from tb_st_trading_data_mix
-       where n1 - n <= i_len
+      --where n1 - n <= i_len
+       where (time1 - time) * 1440 <= i_len 
        group by n;
     commit;
     delete /*+rule*/
@@ -383,8 +403,9 @@ create or replace package body pkg_scalping_tester is
   begin
     log('get_rsi_trading(' || to_char(i_long_rsi) || ',' || to_char(i_short_rsi) ||
         '):开始');
+    /* -- RSI生成规则1  
     execute immediate 'truncate table tb_st_rsi_trading';
-    insert /*+append*/
+    insert \*+append*\
     into tb_st_rsi_trading
       select a.time, a.n, 'long' type, i_long_rsi
         from tb_st_trading_data a, tb_st_trading_data b
@@ -396,6 +417,21 @@ create or replace package body pkg_scalping_tester is
         from tb_st_trading_data a, tb_st_trading_data b
        where a.n = b.n + 1
          and b.rsi >= i_short_rsi
+         and a.rsi < i_short_rsi;
+    commit;
+    */
+    -- RSI生成规则2
+    execute immediate 'truncate table tb_st_rsi_trading';
+    insert /*+append*/
+    into tb_st_rsi_trading
+      select a.time, a.n, 'long' type, i_long_rsi
+        from tb_st_trading_data a
+       where a.rsi1 <= i_long_rsi
+         and a.rsi > i_long_rsi
+      union all
+      select a.time, a.n, 'short' type, i_short_rsi
+        from tb_st_trading_data a
+       where a.rsi1 >= i_short_rsi
          and a.rsi < i_short_rsi;
     commit;
     log('get_rsi_trading:结束');
@@ -467,6 +503,7 @@ create or replace package body pkg_scalping_tester is
              sum(sl) sl,
              sum(cl) cl,
              sum(profit) profit,
+             sum(profit) / count(*) avg_profit,
              sum(tp * profit) tp_profit,
              sum(sl * profit) sl_profit,
              sum(cl * profit) cl_profit,
@@ -489,16 +526,15 @@ create or replace package body pkg_scalping_tester is
     log('get_rsi_trading_stat:结束');
   end;
 
-  procedure get_data is
+  procedure get_data(i_table_name varchar2) is
     i number;
     j number;
   begin
-    clear_log;
     log('get_data:开始');
   
     -- 导入建议的原始数据
     --load_trading_data('tb_hfmarketsltd_eurcad_m1_real', 120);
-    load_trading_data('tb_hf_eurcad_m1_30sp', 120);
+    load_trading_data(i_table_name, 120);
   
     -- 生成所有盈利切片数据    
     execute immediate 'truncate table tb_st_profit_slice_bak';
@@ -532,6 +568,76 @@ create or replace package body pkg_scalping_tester is
     get_rsi_trading_stat;
   
     log('get_data:结束');
+  end;
+
+  procedure test01 is
+  begin
+    clear_log;
+    log('test01:开始');
+    -- 更新201306数据
+    get_data('tb_hfltd_eurcad_m1_42p_201306');
+    execute immediate '
+      create table tb_st_rsi_trading_stat_201306 as select * from tb_st_rsi_trading_stat ';
+    execute immediate '      
+      create table tb_st_rsi_trading_201306 as select * from tb_st_rsi_trading_detail_1 ';
+    log('test01:201306完成');
+  
+    -- 更新201307数据
+    get_data('tb_hfltd_eurcad_m1_42p_201307');
+    execute immediate '
+      create table tb_st_rsi_trading_stat_201307 as select * from tb_st_rsi_trading_stat ';
+    execute immediate '      
+      create table tb_st_rsi_trading_201307 as select * from tb_st_rsi_trading_detail_1 ';
+    log('test01:201307完成');
+  
+    -- 更新201308数据
+    get_data('tb_hfltd_eurcad_m1_42p_201308');
+    execute immediate '
+      create table tb_st_rsi_trading_stat_201308 as select * from tb_st_rsi_trading_stat ';
+    execute immediate '      
+      create table tb_st_rsi_trading_201308 as select * from tb_st_rsi_trading_detail_1 ';
+    log('test01:201308完成');
+    log('test01:结束');
+  end;
+
+  procedure test02 is
+  begin
+    clear_log;
+    log('test02:开始');
+    -- 更新30p数据
+    get_data('tb_hfmarketsltd_eurcad_m1_30p');
+    execute immediate '
+      create table tb_st_rsi_trading_stat_30p as select * from tb_st_rsi_trading_stat ';
+    execute immediate '      
+      create table tb_st_rsi_trading_detail_30p as select * from tb_st_rsi_trading_detail_1 ';
+    log('test01:30p完成');
+  
+    -- 更新35p数据
+    get_data('tb_hfmarketsltd_eurcad_m1_35p');
+    execute immediate '
+      create table tb_st_rsi_trading_stat_35p as select * from tb_st_rsi_trading_stat ';
+    execute immediate '      
+      create table tb_st_rsi_trading_detail_35p as select * from tb_st_rsi_trading_detail_1 ';
+    log('test01:35p完成');
+  
+    -- 更新40p数据
+    get_data('tb_hfmarketsltd_eurcad_m1_40p');
+    execute immediate '
+      create table tb_st_rsi_trading_stat_40p as select * from tb_st_rsi_trading_stat ';
+    execute immediate '      
+      create table tb_st_rsi_trading_detail_40p as select * from tb_st_rsi_trading_detail_1 ';
+    log('test01:40p完成');
+  
+    log('test02:结束');
+  end;
+
+  procedure test03 is
+  begin
+    --load_trading_data('duh0829_1',120);
+    --load_trading_data('duh0829_2',120);
+    --load_trading_data('DUH0902_1', 120);
+    clear_log;
+    get_data('DUH0902_1');
   end;
 
 /*
